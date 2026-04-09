@@ -191,11 +191,24 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
             if card:
                 card_text = card.get_text(" ", strip=True)
 
-                # Phone: joszaki shows proxy number in tel: links
-                tel_link = card.find("a", href=re.compile(r"^tel:"))
-                if tel_link:
-                    raw = tel_link.get("href", "").replace("tel:", "")
-                    phone = clean_phone(raw)
+                # Phone: joszaki shows proxy numbers like "+36 1 443 3777 / 57136"
+                # The extension after "/" is essential — do NOT use clean_phone() here
+                # as it strips slashes and destroys the extension.
+                # Strategy: look for the full proxy pattern in card text first,
+                # then fall back to the tel: link href.
+                proxy_match = re.search(
+                    r"(\+36[\s\d]{7,15}/\s*\d{3,6})",
+                    card_text,
+                )
+                if proxy_match:
+                    # Normalize spaces but keep slash+extension intact
+                    phone = re.sub(r"\s+", " ", proxy_match.group(1)).strip()
+                else:
+                    tel_link = card.find("a", href=re.compile(r"^tel:"))
+                    if tel_link:
+                        # Raw href value e.g. "tel:+3614433777" — keep as-is without mangling
+                        raw = tel_link.get("href", "").replace("tel:", "").strip()
+                        phone = raw if raw else ""
 
                 # Website: any external link that isn't joszaki itself
                 for a in card.find_all("a", href=True):
