@@ -31,7 +31,7 @@ jobs:
 
       - name: Run scraper
         working-directory: lead-system/scripts
-        run: python run_scraper.py --source joszaki --pages 5
+        run: python run_scraper.py --source all --pages 5
 
       - name: Commit and push new lead files
         run: |

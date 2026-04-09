@@ -5,7 +5,7 @@ Loops through all target industries and runs the scraper for each.
 
 Usage:
     python run_scraper.py
-    python run_scraper.py --source joszaki --pages 5
+    python run_scraper.py --source jofogas --pages 5
     python run_scraper.py --source all --score   # auto-score each file after scraping
 """
 
@@ -37,14 +37,14 @@ def main():
     parser.add_argument(
         "--source",
         default="all",
-        choices=["all", "joszaki", "jofogas", "ceginfo"],
+        choices=["all", "jofogas", "ceginfo"],
         help="Which source to scrape (default: all)",
     )
     parser.add_argument(
         "--pages",
         type=int,
-        default=3,
-        help="Pages per source per industry (default: 3)",
+        default=5,
+        help="Pages per source per industry (default: 5)",
     )
     parser.add_argument(
         "--score",
