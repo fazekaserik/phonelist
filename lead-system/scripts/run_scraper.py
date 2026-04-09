@@ -37,7 +37,7 @@ def main():
     parser.add_argument(
         "--source",
         default="all",
-        choices=["all", "jofogas", "ceginfo"],
+        choices=["all", "joszaki", "jofogas", "ceginfo"],
         help="Which source to scrape (default: all)",
     )
     parser.add_argument(

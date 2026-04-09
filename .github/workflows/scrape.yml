@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r lead-system/requirements.txt
 
+      - name: Install Playwright browser
+        run: playwright install chromium --with-deps
+
       - name: Run scraper
         working-directory: lead-system/scripts
         run: python run_scraper.py --source all --pages 5
