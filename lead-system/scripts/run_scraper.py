@@ -5,8 +5,8 @@ Loops through all target industries and runs the scraper for each.
 
 Usage:
     python run_scraper.py
-    python run_scraper.py --source firmania --pages 5
-    python run_scraper.py --score   # auto-score each file after scraping
+    python run_scraper.py --source joszaki --pages 5
+    python run_scraper.py --source all --score   # auto-score each file after scraping
 """
 
 import argparse
@@ -37,7 +37,7 @@ def main():
     parser.add_argument(
         "--source",
         default="all",
-        choices=["all", "firmania", "arany", "jofogas"],
+        choices=["all", "joszaki", "jofogas", "ceginfo"],
         help="Which source to scrape (default: all)",
     )
     parser.add_argument(
