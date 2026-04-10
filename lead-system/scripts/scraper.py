@@ -178,42 +178,106 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
     """
     Scrape joszaki.hu using headless Chromium via Playwright.
 
-    Phone numbers (+36 1 443 3777 / XXXXX) are rendered by React JS and are
-    NOT in the static HTML. Playwright waits for full render before extracting.
+    Phone numbers (+36 1 443 3777 / XXXXX) are rendered by React JS.
+    We use page.evaluate() to extract data directly from the live browser DOM —
+    this is the only reliable way to read React-rendered leaf elements.
 
-    For each professional card:
-      - Name: derived from the /szakember/SLUG href ("torma-tibor" → "Torma Tibor")
-      - Phone: text of the button element containing "+36", saved as-is
-      - City: Budapest kerület if visible in card text
-      - Website: any non-joszaki external link in the card
+    Extraction strategy (runs inside the browser):
+      - For each a[href^="/szakember/"] link, walk up to the card container
+      - Phone: find the deepest text node that starts with "+36" and contains "/"
+      - Website: first external <a href="http..."> that isn't joszaki/facebook
+      - City: regex for "XIII. kerület" style text in the card
+      - Reviews: regex for "12 értékelés" in the card
     """
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
+        from playwright.sync_api import sync_playwright
     except ImportError:
         print("  [joszaki] Playwright not installed. Run: pip install playwright && playwright install chromium")
         return []
 
     category_slug = None
-    query_lower = query.lower()
     for keyword, slug in JOSZAKI_CATEGORY_MAP.items():
-        if keyword in query_lower:
+        if keyword in query.lower():
             category_slug = slug
             break
 
     if not category_slug:
         print(f"  [joszaki] No category mapping for: '{query}'")
-        print(f"  [joszaki] Known keywords: {', '.join(JOSZAKI_CATEGORY_MAP)}")
         return []
 
     industry_label, _ = split_query(query)
     leads = []
 
+    # JavaScript that runs inside the browser and returns structured card data.
+    # Reads the fully-rendered React DOM — BeautifulSoup cannot do this reliably.
+    EXTRACT_JS = """
+    () => {
+        const results = [];
+        const links = Array.from(document.querySelectorAll('a[href^="/szakember/"]'));
+
+        links.forEach(link => {
+            // Walk up to find the card container (stops when it finds an ancestor
+            // that contains exactly this one specialist link)
+            let card = null;
+            let el = link.parentElement;
+            while (el && el !== document.body) {
+                const count = el.querySelectorAll('a[href^="/szakember/"]').length;
+                if (count === 1) {
+                    card = el;
+                }
+                el = el.parentElement;
+            }
+
+            let phone = '';
+            let website = '';
+            let cardText = '';
+            let reviews = '';
+
+            if (card) {
+                cardText = card.innerText || '';
+
+                // Phone: find the shallowest text node that starts with "+36" and
+                // contains "/" (joszaki proxy format: "+36 1 443 3777 / 57136")
+                const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                    const t = node.textContent.trim();
+                    if (t.startsWith('+36') && t.includes('/') && t.length < 35) {
+                        phone = t;
+                        break;
+                    }
+                }
+
+                // Website: first external link that isn't joszaki or facebook
+                const anchors = card.querySelectorAll('a[href^="http"]');
+                for (const a of anchors) {
+                    if (!a.href.includes('joszaki.hu') && !a.href.includes('facebook.com')) {
+                        website = a.href;
+                        break;
+                    }
+                }
+
+                // Reviews: "12 értékelés" or "12 vélemény"
+                const revMatch = cardText.match(/(\\d+)\\s*(értékelés|vélemény)/);
+                if (revMatch) reviews = revMatch[1];
+            }
+
+            results.push({
+                href: link.getAttribute('href') || '',
+                phone: phone,
+                website: website,
+                cardText: cardText.substring(0, 600),
+                reviews: reviews
+            });
+        });
+
+        return results;
+    }
+    """
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        ctx = browser.new_context(
-            user_agent=HEADERS["User-Agent"],
-            locale="hu-HU",
-        )
+        ctx = browser.new_context(user_agent=HEADERS["User-Agent"], locale="hu-HU")
         page = ctx.new_page()
 
         for page_num in range(1, pages + 1):
@@ -222,88 +286,44 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
 
             try:
                 page.goto(url, wait_until="networkidle", timeout=PW_TIMEOUT)
-                # Wait until at least one specialist card link is visible
                 page.wait_for_selector('a[href^="/szakember/"]', timeout=PW_TIMEOUT)
+                # Extra pause: React may still be filling in phone button content
+                page.wait_for_timeout(2000)
             except Exception as e:
                 print(f"  [joszaki] Page {page_num} load error: {e}")
                 break
 
-            # Parse fully-rendered HTML
-            soup = BeautifulSoup(page.content(), "html.parser")
+            # Run extraction entirely inside the browser DOM
+            cards_data = page.evaluate(EXTRACT_JS)
 
-            # Each specialist card has exactly one Bővebben link → /szakember/SLUG
-            specialist_links = soup.find_all(
-                "a", href=re.compile(r"^/szakember/[^/]+")
-            )
-
-            if not specialist_links:
+            if not cards_data:
                 print(f"  [joszaki] No cards on page {page_num}, stopping.")
                 break
 
             page_count = 0
-            for link in specialist_links:
-                raw_href = link.get("href", "")
+            for item in cards_data:
+                raw_href = item.get("href", "")
                 name = name_from_slug(raw_href)
                 if not name:
                     continue
 
                 profile_url = "https://joszaki.hu" + raw_href.split("?")[0]
+                phone = item.get("phone", "").strip()
+                website = item.get("website", "").strip()
+                google_reviews = item.get("reviews", "")
 
-                # Walk up to the enclosing card div
-                card = link.find_parent(
-                    lambda tag: tag.name in ("div", "article", "li", "section")
-                )
-
-                phone = ""
-                website = ""
+                # City: look for kerület in card text
                 city = "Budapest"
-                google_reviews = ""
+                city_m = re.search(
+                    r"([IVXLC]+\.\s*kerület|\d+\.\s*kerület)",
+                    item.get("cardText", "")
+                )
+                if city_m:
+                    city = f"Budapest {city_m.group(0).strip()}"
 
-                if card:
-                    card_text = card.get_text(" ", strip=True)
-
-                    # Phone: joszaki proxy format "+36 1 443 3777 / 57136"
-                    # Look for any button/span/div whose text starts with "+36"
-                    for el in card.find_all(True):
-                        el_text = el.get_text(strip=True)
-                        if el_text.startswith("+36") and "/" in el_text:
-                            phone = el_text
-                            break
-
-                    # Fallback: regex over full card text
-                    if not phone:
-                        proxy_match = re.search(
-                            r"(\+36[\s\d]{6,14}/\s*\d{3,6})", card_text
-                        )
-                        if proxy_match:
-                            phone = re.sub(r"\s+", " ", proxy_match.group(1)).strip()
-
-                    # Website: first external link that isn't joszaki/facebook
-                    for a in card.find_all("a", href=True):
-                        h = a["href"]
-                        if (
-                            h.startswith("http")
-                            and "joszaki.hu" not in h
-                            and "facebook.com" not in h
-                        ):
-                            website = h
-                            break
-
-                    # City: kerület
-                    city_m = re.search(
-                        r"([IVXLC]+\.\s*kerület|\d+\.\s*kerület)", card_text
-                    )
-                    if city_m:
-                        city = f"Budapest {city_m.group(0).strip()}"
-
-                    # Reviews
-                    rev_m = re.search(r"(\d+)\s*(értékelés|vélemény)", card_text)
-                    if rev_m:
-                        google_reviews = rev_m.group(1)
-
-                notes = f"joszaki proxy | profil: {profile_url}"
-                if not phone:
-                    notes = f"profil: {profile_url}"
+                notes = f"profil: {profile_url}"
+                if phone:
+                    notes = f"joszaki proxy | {notes}"
 
                 leads.append({
                     "name": name,
@@ -318,7 +338,9 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
                 })
                 page_count += 1
 
-            print(f"  [joszaki] Page {page_num}: {page_count} specialists (total: {len(leads)})")
+            print(f"  [joszaki] Page {page_num}: {page_count} specialists "
+                  f"(with phone: {sum(1 for c in cards_data if c.get('phone'))}) "
+                  f"| total: {len(leads)}")
 
             if page_count < 5:
                 print(f"  [joszaki] Fewer than 5 results — likely last page.")

@@ -43,15 +43,25 @@ COMPANY_KEYWORDS = {"kft", "bt.", "zrt", "és társa", "group", "team", "csoport
 # ---------------------------------------------------------------------------
 
 def score_website(lead: dict) -> tuple[int, str]:
-    """Returns (points, website_status)."""
+    """
+    Returns (points, website_status).
+
+    joszaki.hu leads: website field is empty because we only scrape the listing
+    page. We genuinely don't know if they have a website — score as "unknown"
+    (15 pts) rather than assuming "none" (35 pts / Full Csomag).
+
+    Other sources: empty website field means they likely don't have one.
+    """
     website = (lead.get("website") or "").strip().lower()
+    source = (lead.get("source") or "").strip().lower()
 
-    if not website or website in ("", "nincs", "n/a", "-", "none"):
-        return 35, "none"
+    if not website or website in ("nincs", "n/a", "-", "none"):
+        if "joszaki" in source:
+            return 15, "unknown"   # don't know — visit profile to check
+        return 35, "none"          # other sources: no website = Full Csomag signal
 
-    # Basic heuristics for quality
     has_ssl = website.startswith("https://")
-    is_very_short = len(website) < 15  # e.g. just a domain with no path
+    is_very_short = len(website) < 15
 
     if not has_ssl or is_very_short:
         return 20, "basic"
@@ -123,18 +133,29 @@ def score_business_size(lead: dict) -> int:
 
 
 def score_contact_quality(lead: dict) -> tuple[int, bool]:
-    """Returns (points, disqualified)."""
+    """
+    Returns (points, disqualified).
+
+    Disqualification rules:
+    - No phone AND no email AND no profile URL → disqualify
+    - Email-only (no phone) → disqualify (can't cold call)
+    - No phone but has joszaki profile URL → keep with 0 pts (C grade, manual follow-up)
+    - Phone only → 7 pts
+    - Phone + email → 10 pts
+    """
     phone = (lead.get("phone") or lead.get("telefon") or "").strip()
     email = (lead.get("email") or "").strip()
+    notes = (lead.get("notes") or "").strip()
 
     has_phone = bool(phone)
     has_email = bool(email)
+    has_profile = "profil:" in notes  # joszaki profile URL in notes
 
-    if not has_phone and not has_email:
-        return 0, True  # disqualify
+    if not has_phone and not has_email and not has_profile:
+        return 0, True  # nothing at all → disqualify
 
-    if not has_phone and has_email:
-        return 0, True  # disqualify (email-only, can't cold call)
+    if not has_phone and has_email and not has_profile:
+        return 0, True  # email-only, no way to call → disqualify
 
     if has_phone and has_email:
         return 10, False
@@ -142,12 +163,16 @@ def score_contact_quality(lead: dict) -> tuple[int, bool]:
     if has_phone:
         return 7, False
 
-    return 0, True
+    # No phone but has a joszaki profile URL — keep as C grade for manual lookup
+    return 0, False
 
 
 def determine_package(website_status: str, score: int) -> str:
     if website_status == "none":
         return "Full Csomag"
+
+    if website_status == "unknown":
+        return "Both - árajánlat"  # check their profile, then decide
 
     if website_status == "basic":
         if score >= 55:
