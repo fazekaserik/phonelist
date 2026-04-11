@@ -236,13 +236,14 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
             if (card) {
                 cardText = card.innerText || '';
 
-                // Phone: find the shallowest text node that starts with "+36" and
-                // contains "/" (joszaki proxy format: "+36 1 443 3777 / 57136")
+                // Phone: find the text node that starts with "+36" and contains "/"
+                // (joszaki proxy format: "+36 1 443 3777 / 57136")
+                // No length cap — we need the FULL string including slash + extension.
                 const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
                 let node;
                 while ((node = walker.nextNode())) {
                     const t = node.textContent.trim();
-                    if (t.startsWith('+36') && t.includes('/') && t.length < 35) {
+                    if (t.startsWith('+36') && t.includes('/')) {
                         phone = t;
                         break;
                     }
@@ -308,9 +309,17 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
                     continue
 
                 profile_url = "https://joszaki.hu" + raw_href.split("?")[0]
+                # Save full proxy string as-is: "+36 1 443 3777 / 57136"
                 phone = item.get("phone", "").strip()
                 website = item.get("website", "").strip()
                 google_reviews = item.get("reviews", "")
+
+                # Extract 5-digit extension after the "/"
+                extension = ""
+                if phone and "/" in phone:
+                    ext_part = phone.split("/")[-1].strip()
+                    if re.fullmatch(r"\d{4,6}", ext_part):
+                        extension = ext_part
 
                 # City: look for kerület in card text
                 city = "Budapest"
@@ -321,13 +330,17 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
                 if city_m:
                     city = f"Budapest {city_m.group(0).strip()}"
 
-                notes = f"profil: {profile_url}"
-                if phone:
-                    notes = f"joszaki proxy | {notes}"
+                if phone and extension:
+                    notes = f"Joszaki proxy - mellék: {extension} | profil: {profile_url}"
+                elif phone:
+                    notes = f"Joszaki proxy | profil: {profile_url}"
+                else:
+                    notes = f"profil: {profile_url}"
 
                 leads.append({
                     "name": name,
                     "phone": phone,
+                    "extension": extension,
                     "city": city,
                     "website": website,
                     "email": "",
@@ -559,7 +572,7 @@ def scrape_ceginfo(query: str, pages: int = 5) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 FIELDNAMES = [
-    "name", "phone", "city", "website", "email",
+    "name", "phone", "extension", "city", "website", "email",
     "industry", "source", "google_reviews", "notes",
 ]
 
