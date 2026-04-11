@@ -42,9 +42,9 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-REQUEST_DELAY = 2.5   # seconds between page requests
-TIMEOUT = 20          # seconds for requests
-PW_TIMEOUT = 30_000   # milliseconds for Playwright
+REQUEST_DELAY = 2.5   # seconds between listing page requests
+PROFILE_DELAY = 1.5   # seconds between individual profile page visits (joszaki)
+PW_TIMEOUT    = 30_000   # milliseconds for Playwright
 
 RAW_LEADS_DIR = os.path.join(os.path.dirname(__file__), "..", "raw_leads")
 
@@ -358,7 +358,7 @@ def scrape_joszaki(query: str, pages: int = 5) -> list[dict]:
                 "notes":         notes,
             })
 
-            time.sleep(REQUEST_DELAY)
+            time.sleep(PROFILE_DELAY)
 
         browser.close()
 
