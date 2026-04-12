@@ -7,6 +7,10 @@ Végigmegy a joszaki.hu összes beállított iparágán,
 minden iparághoz meghívja a joszaki_scraper.py-t, és
 elmenti az eredményeket a /raw_leads/ mappába.
 
+Deduplikáció: a joszaki_scraper.py induláskor beolvassa az összes meglévő
+raw_leads/*.csv fájlból a profile_url mezőket, és kihagyja az ismert
+profilokat. Ha nincs egyetlen új lead sem, nem jön létre üres CSV fájl.
+
 Majd automatikusan lefuttatja a score_leads.py-t is.
 
 Használat:
@@ -17,6 +21,8 @@ Használat:
 """
 
 import argparse
+import csv
+import glob
 import subprocess
 import sys
 import time
@@ -35,7 +41,23 @@ ALL_INDUSTRIES = [
 
 BETWEEN_INDUSTRY_DELAY = 3.0  # másodperc iparágak között
 
-SCRIPTS_DIR = Path(__file__).parent
+SCRIPTS_DIR  = Path(__file__).parent
+RAW_LEADS_DIR = SCRIPTS_DIR.parent / "raw_leads"
+
+
+def count_known_urls() -> int:
+    """Megszámolja az összes ismert profil URL-t a raw_leads/ mappában."""
+    known: set[str] = set()
+    for csv_file in glob.glob(str(RAW_LEADS_DIR / "*.csv")):
+        try:
+            with open(csv_file, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    url = (row.get("profile_url") or "").strip()
+                    if url:
+                        known.add(url)
+        except Exception:
+            pass
+    return len(known)
 
 
 def run_scraper_for(category: str, pages: int) -> bool:
@@ -89,9 +111,12 @@ def main():
 
     industries = args.only if args.only else ALL_INDUSTRIES
 
+    known_count = count_known_urls()
+
     print(f"Erik Marketing — Lead Generáló Rendszer")
     print(f"Iparágak ({len(industries)}): {', '.join(industries)}")
     print(f"Oldalak iparágonként: {args.pages}")
+    print(f"Deduplikáció: {known_count} ismert profil URL kizárva")
     print()
 
     success_count = 0

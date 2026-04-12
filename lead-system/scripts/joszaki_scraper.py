@@ -24,6 +24,7 @@ Kategória slugok:
 
 import argparse
 import csv
+import glob
 import os
 import re
 import time
@@ -172,6 +173,30 @@ def format_phone(extension: str) -> str:
     return f"{CENTRAL_NUMBER} (mellék: {extension})"
 
 
+def load_known_urls(raw_leads_dir: str = RAW_LEADS_DIR) -> set[str]:
+    """
+    Beolvassa az összes meglévő raw_leads/*.csv fájlból a profile_url mezőket.
+    Visszaad egy set-et, amivel a duplikátumok kiszűrhetők scraping előtt.
+    """
+    known: set[str] = set()
+    if not os.path.isdir(raw_leads_dir):
+        return known
+    csv_files = sorted(glob.glob(os.path.join(raw_leads_dir, "*.csv")))
+    for csv_file in csv_files:
+        try:
+            with open(csv_file, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    url = (row.get("profile_url") or "").strip()
+                    if url:
+                        known.add(url)
+        except Exception as e:
+            print(f"  [dedup] Nem sikerült olvasni: {os.path.basename(csv_file)}: {e}")
+    if known:
+        print(f"  [dedup] {len(known)} ismert profil betöltve ({len(csv_files)} CSV fájlból)")
+    return known
+
+
 # ---------------------------------------------------------------------------
 # Fő scraper függvény
 # ---------------------------------------------------------------------------
@@ -204,6 +229,9 @@ def scrape_joszaki(category_key: str, pages: int = 5) -> list[dict]:
         print("[HIBA] Playwright nincs telepítve.")
         print("  Futtasd: pip install playwright && playwright install chromium")
         return []
+
+    # Ismert profilok betöltése deduplikációhoz
+    known_urls: set[str] = load_known_urls()
 
     leads: list[dict] = []
     scraped_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -270,7 +298,23 @@ def scrape_joszaki(category_key: str, pages: int = 5) -> list[dict]:
 
             time.sleep(PAGE_DELAY)
 
-        print(f"\n  1. fázis kész. {len(profile_slugs)} profil felkeresése következik...\n")
+        # ==================================================================
+        # DEDUPLIKÁCIÓ: kiszűrjük az already-seen profilokat
+        # ==================================================================
+        before_dedup = len(profile_slugs)
+        profile_slugs = [
+            slug for slug in profile_slugs
+            if f"https://joszaki.hu/szakember/{slug}" not in known_urls
+        ]
+        skipped = before_dedup - len(profile_slugs)
+        if skipped:
+            print(f"  [dedup] {skipped} már ismert profil kihagyva.")
+        print(f"\n  1. fázis kész. {len(profile_slugs)} új profil felkeresése következik...\n")
+
+        if not profile_slugs:
+            browser.close()
+            print(f"  Nincs új lead: {category_key} — minden profil már ismert.")
+            return []
 
         # ==================================================================
         # FÁZIS 2: Profil oldalak felkeresése, adatok kinyerése
@@ -347,8 +391,15 @@ def scrape_joszaki(category_key: str, pages: int = 5) -> list[dict]:
 # CSV mentés
 # ---------------------------------------------------------------------------
 
-def save_leads(leads: list[dict], category_key: str) -> str:
-    """CSV mentés /raw_leads/ mappába, timestamp névvel."""
+def save_leads(leads: list[dict], category_key: str) -> str | None:
+    """
+    CSV mentés /raw_leads/ mappába, timestamp névvel.
+    Ha a lista üres, nem hoz létre fájlt — csak loggolja.
+    """
+    if not leads:
+        print(f"  Nincs új lead: {category_key} — CSV nem jött létre.")
+        return None
+
     os.makedirs(RAW_LEADS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename  = f"leads_{category_key}_budapest_{timestamp}.csv"
@@ -395,13 +446,15 @@ def main():
             leads = scrape_joszaki(key, pages=args.pages)
             if leads:
                 save_leads(leads, key)
+            else:
+                print(f"  Nincs új lead: {key}")
             time.sleep(PAGE_DELAY)
     else:
         leads = scrape_joszaki(args.category, pages=args.pages)
         if leads:
             save_leads(leads, args.category)
-        elif leads is not None:
-            print("Nincs lead. Ellenőrizd a hálózatot és a kategória slugot.")
+        else:
+            print(f"Nincs új lead: {args.category}")
 
 
 if __name__ == "__main__":
