@@ -34,7 +34,7 @@ jobs:
 
       - name: Run joszaki.hu scraper — összes iparág
         working-directory: lead-system/scripts
-        run: python run_scraper.py --pages 3
+        run: python run_scraper.py --pages 2
 
       - name: Commit and push new lead files
         run: |
