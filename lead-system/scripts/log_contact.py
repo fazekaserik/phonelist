@@ -1,299 +1,260 @@
 #!/usr/bin/env python3
 """
-Contact Logger
-Log outreach attempts and prevent duplicate calls.
+log_contact.py — Kapcsolatfelvétel naplózó
+==========================================
 
-Usage (interactive):
-    python log_contact.py
+Nyilvántartja, hogy melyik leadet mikor kerestük meg,
+milyen csatornán és milyen eredménnyel.
+Megakadályozza az ismételt megkeresést (duplikáció-védelem).
 
-Usage (command-line args):
-    python log_contact.py --name "Kovács Villanyszerelő" --phone "+36301234567" \
-        --method call --outcome interested --notes "Visszahív szerdán"
+Használat:
+    # Kapcsolatfelvétel naplózása
+    python log_contact.py log \
+        --name "Kovács János" \
+        --phone "+36 1 443 3777 (mellék: 57136)" \
+        --channel hivas \
+        --result "érdeklődő, visszahív" \
+        --package "Full Csomag"
+
+    # Már megkeresett? (ellenőrzés telefonszámra)
+    python log_contact.py check --phone "+36 1 443 3777 (mellék: 57136)"
+
+    # Összes napló listázása
+    python log_contact.py list
+
+    # Statisztikák
+    python log_contact.py stats
+
+Csatornák: hivas, sms, email, facebook, egyeb
+Eredmények: erdeklodo, visszahiv, nem_erdekli, nem_vette_fel, hibas_szam, egyeb
 """
 
 import argparse
 import csv
 import os
 import sys
-from datetime import date, datetime
+from datetime import datetime
 
-SENT_LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "sent_log")
-CONTACTS_FILE = os.path.join(SENT_LOG_DIR, "contacts.csv")
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
-FIELDNAMES = [
-    "date",
-    "time",
-    "business_name",
+BASE_DIR     = os.path.dirname(__file__)
+SENT_LOG_DIR = os.path.join(BASE_DIR, "..", "sent_log")
+LOG_FILE     = os.path.join(SENT_LOG_DIR, "contacts.csv")
+
+VALID_CHANNELS = ["hivas", "sms", "email", "facebook", "egyeb"]
+VALID_RESULTS  = [
+    "erdeklodo", "visszahiv", "nem_erdekli",
+    "nem_vette_fel", "hibas_szam", "egyeb",
+]
+
+LOG_FIELDS = [
+    "timestamp",
+    "name",
     "phone",
-    "method",
-    "outcome",
+    "channel",
+    "result",
+    "package",
     "notes",
+    "logged_by",
 ]
 
-VALID_METHODS = ["call", "sms", "viber", "whatsapp", "email"]
-VALID_OUTCOMES = [
-    "no_answer",
-    "interested",
-    "not_interested",
-    "callback_scheduled",
-    "voicemail",
-    "wrong_number",
-    "already_has_service",
-]
-
-
 # ---------------------------------------------------------------------------
-# Core functions
+# Napló kezelése
 # ---------------------------------------------------------------------------
 
-def ensure_log_file():
-    """Create log file with headers if it doesn't exist."""
+def _ensure_log_file():
     os.makedirs(SENT_LOG_DIR, exist_ok=True)
-    if not os.path.exists(CONTACTS_FILE):
-        with open(CONTACTS_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-            writer.writeheader()
-        print(f"Created new contacts log: {CONTACTS_FILE}")
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=LOG_FIELDS).writeheader()
 
 
-def load_contacted_phones() -> set[str]:
-    """Return set of all phone numbers already in the log."""
-    if not os.path.exists(CONTACTS_FILE):
-        return set()
-
-    phones = set()
-    with open(CONTACTS_FILE, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            phone = row.get("phone", "").strip()
-            if phone:
-                phones.add(phone)
-    return phones
+def _load_log() -> list[dict]:
+    _ensure_log_file()
+    with open(LOG_FILE, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
 
 
-def normalize_phone(phone: str) -> str:
-    """Normalize phone for dedup comparison."""
-    import re
-    digits = re.sub(r"[^\d]", "", phone)
-    # strip leading country code for comparison
-    if digits.startswith("36") and len(digits) > 10:
-        digits = digits[2:]
-    if digits.startswith("06"):
-        digits = digits[2:]
-    return digits
+def _phone_key(phone: str) -> str:
+    """Normalizált kulcs összehasonlításhoz (csak számjegyek + mellékszám)."""
+    return phone.strip().lower().replace(" ", "")
 
 
-def is_duplicate(phone: str, contacted_phones: set[str]) -> bool:
-    """Check if phone (or its normalized form) was already contacted."""
-    norm = normalize_phone(phone)
-    for existing in contacted_phones:
-        if normalize_phone(existing) == norm:
-            return True
-    return False
+# ---------------------------------------------------------------------------
+# Parancsok
+# ---------------------------------------------------------------------------
 
+def cmd_log(args):
+    """Új kapcsolatfelvétel rögzítése."""
+    _ensure_log_file()
 
-def append_contact(entry: dict):
-    """Append a single contact entry to the CSV log."""
-    ensure_log_file()
-    with open(CONTACTS_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
-        writer.writerow(entry)
+    # Duplikáció ellenőrzés
+    existing = _load_log()
+    phone_key = _phone_key(args.phone)
+    already_contacted = [
+        e for e in existing
+        if _phone_key(e.get("phone", "")) == phone_key
+    ]
 
+    if already_contacted and not args.force:
+        last = already_contacted[-1]
+        print(f"[FIGYELEM] Ez a szám már meg lett keresve!")
+        print(f"  Utoljára: {last['timestamp']} | {last['channel']} | {last['result']}")
+        print(f"  Ha mégis naplózni szeretnéd, add hozzá a --force kapcsolót.")
+        return
 
-def log_contact(
-    business_name: str,
-    phone: str,
-    method: str,
-    outcome: str,
-    notes: str = "",
-    contact_date: str = "",
-    force: bool = False,
-) -> bool:
-    """
-    Log a contact attempt.
-    Returns True if logged successfully, False if duplicate (and not forced).
-    """
-    ensure_log_file()
-
-    # Validate
-    phone = phone.strip()
-    if not phone:
-        print("ERROR: Phone number is required.")
-        return False
-
-    if method not in VALID_METHODS:
-        print(f"ERROR: Invalid method '{method}'. Valid: {', '.join(VALID_METHODS)}")
-        return False
-
-    if outcome not in VALID_OUTCOMES:
-        print(f"ERROR: Invalid outcome '{outcome}'. Valid: {', '.join(VALID_OUTCOMES)}")
-        return False
-
-    # Duplicate check
-    contacted_phones = load_contacted_phones()
-    if not force and is_duplicate(phone, contacted_phones):
-        print(f"\n[DUPLICATE] {phone} was already contacted before.")
-        print("Use --force to log anyway.")
-        return False
-
-    now = datetime.now()
     entry = {
-        "date": contact_date or date.today().isoformat(),
-        "time": now.strftime("%H:%M"),
-        "business_name": business_name.strip(),
-        "phone": phone,
-        "method": method,
-        "outcome": outcome,
-        "notes": notes.strip(),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "name":      args.name,
+        "phone":     args.phone,
+        "channel":   args.channel,
+        "result":    args.result,
+        "package":   args.package or "",
+        "notes":     args.notes or "",
+        "logged_by": args.logged_by or "cli",
     }
 
-    append_contact(entry)
+    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=LOG_FIELDS, extrasaction="ignore")
+        writer.writerow(entry)
 
-    print(f"\n[LOGGED] {entry['date']} {entry['time']} | {business_name} | {phone}")
-    print(f"         Method: {method} | Outcome: {outcome}")
-    if notes:
-        print(f"         Notes: {notes}")
-
-    return True
+    print(f"Naplózva: {entry['name']} | {entry['phone']} | {entry['channel']} | {entry['result']}")
 
 
-# ---------------------------------------------------------------------------
-# Interactive mode
-# ---------------------------------------------------------------------------
+def cmd_check(args):
+    """Ellenőrzés: volt-e már kapcsolatfelvétel ezzel a számmal."""
+    existing = _load_log()
+    phone_key = _phone_key(args.phone)
+    hits = [e for e in existing if _phone_key(e.get("phone", "")) == phone_key]
 
-def choose_from_list(prompt: str, options: list[str]) -> str:
-    """Show numbered list and let user pick."""
-    print(f"\n{prompt}")
-    for i, opt in enumerate(options, 1):
-        print(f"  {i}. {opt}")
-    while True:
-        choice = input("Enter number: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(options):
-            return options[int(choice) - 1]
-        print("Invalid choice. Try again.")
-
-
-def interactive_mode():
-    print("\n=== CONTACT LOGGER ===")
-    print("Log an outreach attempt\n")
-
-    business_name = input("Business name (cég neve): ").strip()
-    if not business_name:
-        print("Business name is required.")
-        sys.exit(1)
-
-    phone = input("Phone number (telefonszám): ").strip()
-    if not phone:
-        print("Phone number is required.")
-        sys.exit(1)
-
-    # Duplicate check early
-    contacted_phones = load_contacted_phones()
-    if is_duplicate(phone, contacted_phones):
-        print(f"\n[WARNING] This phone ({phone}) was already contacted!")
-        proceed = input("Log anyway? (y/N): ").strip().lower()
-        if proceed != "y":
-            print("Aborted.")
-            sys.exit(0)
-        force = True
+    if hits:
+        print(f"IGEN — {len(hits)}x megkeresve:")
+        for h in hits:
+            print(f"  {h['timestamp']} | {h['channel']} | {h['result']} | {h['notes']}")
     else:
-        force = False
-
-    contact_date = input(f"Date (today = {date.today().isoformat()}, press Enter to use today): ").strip()
-    if contact_date and not _valid_date(contact_date):
-        print("Invalid date format. Using today.")
-        contact_date = ""
-
-    method = choose_from_list("Contact method:", VALID_METHODS)
-    outcome = choose_from_list("Outcome:", VALID_OUTCOMES)
-    notes = input("Notes (megjegyzés, optional): ").strip()
-
-    log_contact(
-        business_name=business_name,
-        phone=phone,
-        method=method,
-        outcome=outcome,
-        notes=notes,
-        contact_date=contact_date,
-        force=force,
-    )
+        print("NEM — ez a szám még nem volt megkeresve.")
 
 
-def _valid_date(s: str) -> bool:
-    try:
-        datetime.strptime(s, "%Y-%m-%d")
-        return True
-    except ValueError:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Stats command
-# ---------------------------------------------------------------------------
-
-def print_stats():
-    """Print summary of contacts log."""
-    if not os.path.exists(CONTACTS_FILE):
-        print("No contacts log found.")
+def cmd_list(args):
+    """Összes naplóbejegyzés listázása."""
+    entries = _load_log()
+    if not entries:
+        print("A napló üres.")
         return
 
-    with open(CONTACTS_FILE, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
+    # Opcionális szűrés
+    if args.channel:
+        entries = [e for e in entries if e.get("channel") == args.channel]
+    if args.result:
+        entries = [e for e in entries if e.get("result") == args.result]
 
-    if not rows:
-        print("Contacts log is empty.")
+    # Rendezés: legújabb elöl
+    entries = sorted(entries, key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    if args.limit:
+        entries = entries[:args.limit]
+
+    print(f"{'Időpont':<20} {'Név':<25} {'Telefon':<40} {'Csatorna':<10} {'Eredmény':<15}")
+    print("-" * 115)
+    for e in entries:
+        print(
+            f"{e.get('timestamp',''):<20} "
+            f"{e.get('name','')[:24]:<25} "
+            f"{e.get('phone','')[:39]:<40} "
+            f"{e.get('channel',''):<10} "
+            f"{e.get('result',''):<15}"
+        )
+    print(f"\nÖsszes bejegyzés: {len(entries)}")
+
+
+def cmd_stats(args):
+    """Összesített statisztikák."""
+    entries = _load_log()
+    if not entries:
+        print("A napló üres.")
         return
 
-    from collections import Counter
-    outcomes = Counter(r["outcome"] for r in rows)
-    methods = Counter(r["method"] for r in rows)
+    total = len(entries)
+    by_result  = {}
+    by_channel = {}
+    by_package = {}
 
-    print("\n=== CONTACT LOG STATS ===")
-    print(f"Total contacts logged: {len(rows)}")
-    print(f"Unique phones: {len(load_contacted_phones())}")
-    print("\nBy outcome:")
-    for outcome, count in sorted(outcomes.items(), key=lambda x: -x[1]):
-        print(f"  {outcome}: {count}")
-    print("\nBy method:")
-    for method, count in sorted(methods.items(), key=lambda x: -x[1]):
-        print(f"  {method}: {count}")
-    print(f"\nLog file: {CONTACTS_FILE}")
-    print("=========================\n")
+    for e in entries:
+        r = e.get("result", "ismeretlen")
+        c = e.get("channel", "ismeretlen")
+        p = e.get("package", "ismeretlen")
+        by_result[r]  = by_result.get(r, 0) + 1
+        by_channel[c] = by_channel.get(c, 0) + 1
+        by_package[p] = by_package.get(p, 0) + 1
+
+    print(f"=== Napló statisztikák ===")
+    print(f"Összes kapcsolatfelvétel: {total}\n")
+
+    print("Eredmény szerint:")
+    for k, v in sorted(by_result.items(), key=lambda x: -x[1]):
+        print(f"  {k:<20} {v:>5} ({100*v//total}%)")
+
+    print("\nCsatorna szerint:")
+    for k, v in sorted(by_channel.items(), key=lambda x: -x[1]):
+        print(f"  {k:<20} {v:>5}")
+
+    print("\nCsomag szerint:")
+    for k, v in sorted(by_package.items(), key=lambda x: -x[1]):
+        print(f"  {k:<20} {v:>5}")
+
+    # Érdeklődők és visszahívandók kiemelése
+    hot = by_result.get("erdeklodo", 0) + by_result.get("visszahiv", 0)
+    print(f"\nMeleg leadek (érdeklődő + visszahív): {hot}")
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# CLI
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Log outreach contact attempts")
-    parser.add_argument("--name", help="Business name")
-    parser.add_argument("--phone", help="Phone number")
-    parser.add_argument("--date", help="Contact date (YYYY-MM-DD, default: today)")
-    parser.add_argument("--method", choices=VALID_METHODS, help="Contact method")
-    parser.add_argument("--outcome", choices=VALID_OUTCOMES, help="Call outcome")
-    parser.add_argument("--notes", default="", help="Optional notes")
-    parser.add_argument("--force", action="store_true", help="Log even if duplicate")
-    parser.add_argument("--stats", action="store_true", help="Show contact log statistics")
+def main():
+    parser = argparse.ArgumentParser(description="Kapcsolatfelvétel napló")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # log
+    p_log = sub.add_parser("log", help="Kapcsolatfelvétel rögzítése")
+    p_log.add_argument("--name",      required=True, help="Lead neve")
+    p_log.add_argument("--phone",     required=True, help="Telefonszám")
+    p_log.add_argument("--channel",   required=True, choices=VALID_CHANNELS,
+                       help=f"Csatorna: {', '.join(VALID_CHANNELS)}")
+    p_log.add_argument("--result",    required=True, choices=VALID_RESULTS,
+                       help=f"Eredmény: {', '.join(VALID_RESULTS)}")
+    p_log.add_argument("--package",   help="Ajánlott csomag (pl. 'Full Csomag')")
+    p_log.add_argument("--notes",     help="Megjegyzés")
+    p_log.add_argument("--logged-by", help="Naplózó neve")
+    p_log.add_argument("--force",     action="store_true",
+                       help="Kényszer-naplózás duplikáció esetén is")
+
+    # check
+    p_check = sub.add_parser("check", help="Ellenőrzés: volt-e már megkeresve")
+    p_check.add_argument("--phone", required=True, help="Telefonszám ellenőrzése")
+
+    # list
+    p_list = sub.add_parser("list", help="Naplóbejegyzések listázása")
+    p_list.add_argument("--channel", choices=VALID_CHANNELS, help="Szűrés csatornára")
+    p_list.add_argument("--result",  choices=VALID_RESULTS,  help="Szűrés eredményre")
+    p_list.add_argument("--limit",   type=int, default=50,   help="Max sorok száma")
+
+    # stats
+    sub.add_parser("stats", help="Összesített statisztikák")
 
     args = parser.parse_args()
 
-    if args.stats:
-        print_stats()
-        sys.exit(0)
+    if args.command == "log":
+        cmd_log(args)
+    elif args.command == "check":
+        cmd_check(args)
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "stats":
+        cmd_stats(args)
 
-    # If all required args provided, run non-interactively
-    if args.name and args.phone and args.method and args.outcome:
-        success = log_contact(
-            business_name=args.name,
-            phone=args.phone,
-            method=args.method,
-            outcome=args.outcome,
-            notes=args.notes,
-            contact_date=args.date or "",
-            force=args.force,
-        )
-        sys.exit(0 if success else 1)
-    else:
-        # Interactive mode
-        interactive_mode()
+
+if __name__ == "__main__":
+    main()

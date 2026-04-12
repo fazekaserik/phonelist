@@ -1,81 +1,191 @@
-# Hungarian Local Business Lead Generation System
+# Erik Marketing — Lead Generáló Rendszer
 
-## Business Overview
+## Üzleti háttér
 
-This is a cold outreach lead generation system for a Hungarian marketing agency targeting local tradespeople and service businesses.
+**Cég:** Erik Marketing  
+**Helyszín:** Budapest / Magyarország  
+**Célpiac:** Helyi kézművesek és szolgáltató vállalkozások
 
-## Products We Sell
+### Eladott termékek
 
-### 1. "Full Csomag" (Full Package)
-- Target: Businesses with **NO website**
-- Includes: Website creation + Google Maps optimization + branding + AI SEO
-- Pitch: Build their entire online presence from zero
+#### 1. "Full Csomag"
+- **Célcsoport:** Vállalkozások, amelyeknek **NINCS weboldaluk**
+- **Tartalom:** Weboldal + Google Térképes megjelenés + branding + AI SEO
+- **Pitch:** Az egész online jelenlétet nulláról felépítjük
 
-### 2. "AI SEO"
-- Target: Businesses WITH a website but **not visible in ChatGPT/Gemini** results
-- Includes: AI-optimized SEO so the business appears when people search via AI assistants
-- Example trigger: "budapest villanyszerelés" in ChatGPT → they should appear
+#### 2. "AI SEO"
+- **Célcsoport:** Vállalkozások, amelyeknek **VAN weboldaluk**, de **nem jelennek meg ChatGPT/Gemini** válaszaiban
+- **Tartalom:** AI-optimalizált SEO, hogy a vállalkozás megjelenjen, ha valaki pl. "budapest villanyszerelés" iránt érdeklődik AI asszisztensnél
 
-## Package Assignment Logic
+### Csomag-döntési logika
 
-| Situation | Recommended Package |
+| Helyzet | Javasolt csomag |
 |---|---|
-| No website at all | Full Csomag |
-| Has basic/outdated website | Full Csomag OR AI SEO |
-| Has decent website, not AI-visible | AI SEO |
-| Unclear | Both - árajánlat (send quote for both) |
+| Nincs weboldal | Full Csomag |
+| Van elavult/egyszerű weboldal | Full Csomag VAGY AI SEO |
+| Van rendes weboldal, de AI-ban nem látható | AI SEO |
+| Bizonytalan | Mindkettő — küldj árajánlatot |
 
-## Target Market
+---
 
-- **Primary location:** Budapest (all kerületek) and agglomeration
-- **Valid area:** All of Hungary (but Budapest is priority)
+## Adatforrás: joszaki.hu
 
-## Target Industries (priority order)
+### Telefonszám formátum — KRITIKUS
 
-1. Villanyszerelők (electricians)
-2. Vízvezetékszerelők (plumbers)
-3. Festők / tapétázók (painters)
-4. Kőművesek / építők (builders/masons)
-5. Klímaszerelők (HVAC)
-6. Bútorozók / lakberendezők (furniture/interior)
-7. Autószerelők (mechanics)
-8. Takarítók / tisztítók (cleaning services)
+A joszaki.hu minden szakember profilhoz **közvetítő (proxy) telefonszámot** ad meg:
 
-## Data Sources
+- **Központi szám:** `+36 1 443 3777`
+- **Mellékszám:** 4–6 jegyű egyedi szám (a proxy hívás URL-ből vagy a megjelenített szövegből kerül kinyerésre)
 
-- **jofogás.hu** — classifieds, tradespeople post services
-- **joszaki.hu/szakemberek** — Hungarian service provider directory
-- **firmania.hu** — Hungarian business directory
-- **arany-oldalak.hu** — Hungarian Yellow Pages equivalent
-- **céginfo.hu** — Hungarian company registry info
-- **Google Maps** — local business search by category
+**Kötelező formátum a CSV-ben:**
+```
++36 1 443 3777 (mellék: XXXXX)
+```
 
-## Folder Structure
+**Ha nincs mellékszám → a `phone` mező ÜRES marad** (nem írunk be hiányos adatot).
+
+A mellékszám kinyerési módszerek (sorrendben):
+1. Hálózati kérés interceptálása: Playwright `page.on("request")` — proxy URL-ben lévő szám
+2. JavaScript szöveges keresés: `"+36 1 443 3777 / XXXXX"` formátumú szövegcsomópont
+
+---
+
+## Mappastruktúra
 
 ```
 /lead-system
-  /raw_leads        ← CSV files with scraped raw data (timestamped)
-  /scored_leads     ← processed JSON with scores + package recommendations
-  /outreach         ← call scripts and message templates
-  /sent_log         ← log of who was contacted and when
-  /scripts          ← all Python scripts
+  /raw_leads       ← Scraped CSV fájlok (timestamp névvel)
+  /scored_leads    ← Pontozás utáni CSV-k (score + grade + package)
+  /outreach        ← Hívási scriptek, üzenet sablonok
+  /sent_log        ← Kapcsolatfelvételi napló (contacts.csv)
+  /scripts         ← Python scriptek
 ```
 
-## Scripts
+---
 
-| Script | Purpose |
+## Scriptek
+
+### `joszaki_scraper.py` — Fő scraper
+```bash
+# Egy iparág
+python scripts/joszaki_scraper.py villanyszerelo --pages 5
+
+# Összes iparág
+python scripts/joszaki_scraper.py all --pages 5
+```
+
+**Működés:**
+1. FÁZIS 1: Listázó oldalak végigolvasása → profil URL-ek gyűjtése
+2. FÁZIS 2: Profiloldalak felkeresése → mellékszám, weboldal, értékelések kinyerése
+3. 2–3 másodperces delay minden lépés között
+4. CSV mentés `/raw_leads/leads_{kategória}_budapest_{timestamp}.csv`
+
+**Kimenet mezők:**
+| Mező | Leírás |
 |---|---|
-| `scripts/scraper.py` | Scrapes a single query from Hungarian directories |
-| `scripts/run_scraper.py` | Loops through all industries automatically |
-| `scripts/scorer.py` | Scores raw leads 0-100 and assigns packages |
-| `scripts/log_contact.py` | Logs outreach attempts, prevents duplicates |
+| `name` | Szakember neve (URL slug-ból) |
+| `phone` | `+36 1 443 3777 (mellék: XXXXX)` vagy üres |
+| `extension` | Csak a mellékszám (pl. `57136`) |
+| `website` | Weboldal URL (ha van) |
+| `google_reviews` | Értékelések száma |
+| `industry` | Iparág neve (pl. `Villanyszerelő`) |
+| `profile_url` | Joszaki.hu profil URL |
+| `scraped_at` | Scraping időpontja |
 
-## Scoring Summary
+### `score_leads.py` — Lead pontozó
+```bash
+# Összes raw CSV pontozása
+python scripts/score_leads.py
 
-- **35 pts** — Website status (no website = max points)
-- **20 pts** — Industry fit
-- **15 pts** — Geography (Budapest = max)
-- **20 pts** — Business size signals
-- **10 pts** — Contact info quality
+# Minimum pont szűrővel
+python scripts/score_leads.py --min-score 50
 
-Grade A (60-100): Call immediately | Grade B (40-59): Second round | Grade C (0-39): Low priority
+# Konkrét fájl
+python scripts/score_leads.py --input ../raw_leads/leads_villanyszerelo_budapest_20260412.csv
+```
+
+**Pontozási rendszer (összesen 100 pt):**
+| Szempont | Max pont | Leírás |
+|---|---|---|
+| Weboldal státusz | 35 | Nincs weboldal = 35 pt |
+| Iparági illeszkedés | 20 | Villanyszerelő = 20 pt (legjobb) |
+| Földrajz | 15 | Budapest = 15 pt |
+| Google értékelések | 20 | 50+ értékelés = 20 pt |
+| Kontakt minőség | 10 | Van telefon + profil URL |
+
+**Osztályzatok:**
+- **A (60–100):** Azonnal hívható
+- **B (40–59):** Második kör
+- **C (0–39):** Alacsony prioritás
+
+### `run_scraper.py` — Automatikus futtatás
+```bash
+# Összes iparág, 5 oldal
+python scripts/run_scraper.py
+
+# Csak megadott iparágak
+python scripts/run_scraper.py --only villanyszerelo komuves --pages 3
+
+# Pontozás nélkül
+python scripts/run_scraper.py --skip-scoring
+```
+
+### `log_contact.py` — Kapcsolatfelvétel napló
+```bash
+# Naplózás
+python scripts/log_contact.py log \
+  --name "Kovács János" \
+  --phone "+36 1 443 3777 (mellék: 57136)" \
+  --channel hivas \
+  --result erdeklodo \
+  --package "Full Csomag"
+
+# Ellenőrzés (volt-e már megkeresve)
+python scripts/log_contact.py check --phone "+36 1 443 3777 (mellék: 57136)"
+
+# Lista
+python scripts/log_contact.py list
+
+# Statisztikák
+python scripts/log_contact.py stats
+```
+
+---
+
+## GitHub Actions — Napi Automatizálás
+
+**Fájl:** `.github/workflows/scrape.yml`  
+**Futás:** Naponta **08:00 UTC** (= 10:00 Budapest nyári időszámítás / 09:00 téli)
+
+**Folyamat:**
+1. Python 3.11 + Playwright Chromium telepítése
+2. `run_scraper.py --pages 3` futtatása (összes 7 iparág)
+3. Új CSV fájlok commit + push → `raw_leads/` és `scored_leads/`
+
+---
+
+## Célzott iparágak (prioritás sorrendben)
+
+1. Villanyszerelők
+2. Vízvezetékszerelők
+3. Festők / tapétázók
+4. Kőművesek
+5. Klímaszerelők
+6. Autószerelők
+7. Takarítók
+
+---
+
+## Telepítés
+
+```bash
+pip install -r lead-system/requirements.txt
+playwright install chromium
+```
+
+## Gyors start
+
+```bash
+cd lead-system/scripts
+python run_scraper.py --pages 2
+```
