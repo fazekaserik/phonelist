@@ -3,15 +3,15 @@ name: Daily Lead Scraper
 on:
   schedule:
     - cron: "0 8 * * *"   # 08:00 UTC = 10:00 Budapest (CEST) / 09:00 (CET)
-  workflow_dispatch:        # allow manual trigger from GitHub Actions UI
+  workflow_dispatch:        # manuális indítás a GitHub Actions felületen
 
 permissions:
-  contents: write           # needed to push CSV files back to the repo
+  contents: write           # CSV fájlok visszaírásához szükséges
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -29,26 +29,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r lead-system/requirements.txt
 
-      - name: Install Playwright browser
+      - name: Install Playwright browser (Chromium)
         run: playwright install chromium --with-deps
 
-      - name: Run scraper
+      - name: Run joszaki.hu scraper — összes iparág
         working-directory: lead-system/scripts
-        run: python run_scraper.py --source all --pages 2
+        run: python run_scraper.py --pages 3
 
       - name: Commit and push new lead files
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage only the raw_leads directory
+          # Csak a raw_leads és scored_leads mappát indexeljük
           git add lead-system/raw_leads/
+          git add lead-system/scored_leads/
 
-          # Only commit if there is something new
+          # Csak akkor commitolunk, ha van változás
           if git diff --cached --quiet; then
-            echo "No new lead files to commit."
+            echo "Nincs új lead fájl — commit kihagyva."
           else
             DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
-            git commit -m "chore: daily lead scrape – ${DATE}"
+            git commit -m "chore: napi lead scrape – ${DATE}"
             git push origin HEAD
           fi

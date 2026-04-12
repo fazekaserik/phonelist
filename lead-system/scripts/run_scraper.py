@@ -1,99 +1,125 @@
 #!/usr/bin/env python3
 """
-Batch Lead Scraper
-Loops through all target industries and runs the scraper for each.
+run_scraper.py — Összes iparág automatikus scrapeolása
+======================================================
 
-Usage:
-    python run_scraper.py
-    python run_scraper.py --source jofogas --pages 5
-    python run_scraper.py --source all --score   # auto-score each file after scraping
+Végigmegy a joszaki.hu összes beállított iparágán,
+minden iparághoz meghívja a joszaki_scraper.py-t, és
+elmenti az eredményeket a /raw_leads/ mappába.
+
+Majd automatikusan lefuttatja a score_leads.py-t is.
+
+Használat:
+    python run_scraper.py                     # összes iparág, 5 oldal
+    python run_scraper.py --pages 3           # összes iparág, 3 oldal
+    python run_scraper.py --only villanyszerelo komuves  # csak ezek
+    python run_scraper.py --skip-scoring      # ne pontozzon
 """
 
 import argparse
-import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 
-from scraper import scrape, save_leads
-
-
-INDUSTRIES = [
-    "villanyszerelő budapest",
-    "vízszerelő budapest",
-    "festő budapest",
-    "kőműves budapest",
-    "klímaszerelő budapest",
-    "autószerelő budapest",
-    "takarítás budapest",
-    "vízvezetékszerelő budapest",
-    "burkoló budapest",
-    "kertész budapest",
+# Iparági kulcsok (joszaki_scraper.py CATEGORIES kulcsaival egyeznek)
+ALL_INDUSTRIES = [
+    "villanyszerelo",
+    "vizvezetekszerelo",
+    "festo",
+    "komuves",
+    "klimaszerelo",
+    "autoszerelo",
+    "takaritas",
 ]
 
-DELAY_BETWEEN_QUERIES = 5  # seconds between different industry queries
+BETWEEN_INDUSTRY_DELAY = 3.0  # másodperc iparágak között
+
+SCRIPTS_DIR = Path(__file__).parent
+
+
+def run_scraper_for(category: str, pages: int) -> bool:
+    """Egy iparág scrapeolása subprocess-en keresztül."""
+    cmd = [
+        sys.executable,
+        str(SCRIPTS_DIR / "joszaki_scraper.py"),
+        category,
+        "--pages", str(pages),
+    ]
+    print(f"\n{'='*60}")
+    print(f"  Iparág: {category} | Oldalak: {pages}")
+    print(f"{'='*60}")
+    result = subprocess.run(cmd, cwd=str(SCRIPTS_DIR))
+    return result.returncode == 0
+
+
+def run_scoring() -> bool:
+    """Lead pontozás futtatása."""
+    print(f"\n{'='*60}")
+    print("  Lead pontozás...")
+    print(f"{'='*60}")
+    cmd = [sys.executable, str(SCRIPTS_DIR / "score_leads.py")]
+    result = subprocess.run(cmd, cwd=str(SCRIPTS_DIR))
+    return result.returncode == 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run scraper for all target industries")
-    parser.add_argument(
-        "--source",
-        default="all",
-        choices=["all", "joszaki", "jofogas", "ceginfo"],
-        help="Which source to scrape (default: all)",
+    parser = argparse.ArgumentParser(
+        description="Joszaki.hu — összes iparág automatikus scrapeolása"
     )
     parser.add_argument(
         "--pages",
         type=int,
         default=5,
-        help="Pages per source per industry (default: 5)",
+        help="Listázó oldalak száma iparágonként (alapértelmezett: 5)",
     )
     parser.add_argument(
-        "--score",
+        "--only",
+        nargs="+",
+        choices=ALL_INDUSTRIES,
+        metavar="IPARAG",
+        help="Csak ezeket az iparágakat scrapeolja",
+    )
+    parser.add_argument(
+        "--skip-scoring",
         action="store_true",
-        help="Automatically run scorer.py on each output CSV",
+        help="Ne futtassa a pontozást a scraping után",
     )
     args = parser.parse_args()
 
-    saved_files = []
-    total_leads = 0
+    industries = args.only if args.only else ALL_INDUSTRIES
 
-    print("=" * 60)
-    print("HUNGARIAN LEAD SCRAPER — BATCH RUN")
-    print(f"Industries: {len(INDUSTRIES)}")
-    print(f"Source: {args.source} | Pages: {args.pages}")
-    print("=" * 60)
+    print(f"Erik Marketing — Lead Generáló Rendszer")
+    print(f"Iparágak ({len(industries)}): {', '.join(industries)}")
+    print(f"Oldalak iparágonként: {args.pages}")
+    print()
 
-    for i, query in enumerate(INDUSTRIES, 1):
-        print(f"\n[{i}/{len(INDUSTRIES)}] Query: {query}")
-        print("-" * 40)
+    success_count = 0
+    fail_count    = 0
 
-        leads = scrape(query, source=args.source, pages=args.pages)
-        total_leads += len(leads)
-
-        if leads:
-            filepath = save_leads(leads, query)
-            saved_files.append(filepath)
+    for i, category in enumerate(industries):
+        ok = run_scraper_for(category, args.pages)
+        if ok:
+            success_count += 1
         else:
-            print(f"  No leads found for: {query}")
+            fail_count += 1
+            print(f"  [FIGYELEM] {category} scraping sikertelen!")
 
-        if i < len(INDUSTRIES):
-            print(f"\nWaiting {DELAY_BETWEEN_QUERIES}s before next query...")
-            time.sleep(DELAY_BETWEEN_QUERIES)
+        # Delay az utolsó kivételével
+        if i < len(industries) - 1:
+            print(f"\n  Következő iparág {BETWEEN_INDUSTRY_DELAY:.0f}mp múlva...")
+            time.sleep(BETWEEN_INDUSTRY_DELAY)
 
-    print("\n" + "=" * 60)
-    print("BATCH SCRAPING COMPLETE")
-    print(f"Total leads collected: {total_leads}")
-    print(f"Files saved: {len(saved_files)}")
-    for f in saved_files:
-        print(f"  - {f}")
-    print("=" * 60)
+    print(f"\n{'='*60}")
+    print(f"  Scraping kész: {success_count} sikeres, {fail_count} sikertelen")
+    print(f"{'='*60}")
 
-    if args.score and saved_files:
-        print("\nAuto-scoring all collected files...")
-        import subprocess
-        scorer_path = os.path.join(os.path.dirname(__file__), "scorer.py")
-        for filepath in saved_files:
-            print(f"\nScoring: {filepath}")
-            subprocess.run(["python3", scorer_path, filepath], check=False)
+    if not args.skip_scoring:
+        run_scoring()
+    else:
+        print("\nPontozás kihagyva (--skip-scoring).")
+
+    print("\nKész.")
 
 
 if __name__ == "__main__":
